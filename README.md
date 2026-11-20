@@ -139,3 +139,10 @@ roles: [
 ---
 
 <p align="center"><em>En cas de doute, c'est le DNS.</em></p>
+
+## Équipe (Groupe G6 - SRCRJ)
+
+- Bill-Axel Koudjina
+- Rémy Motounou
+- Théo Loumouamou
+
