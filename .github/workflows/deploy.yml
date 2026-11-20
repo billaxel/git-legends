@@ -1,0 +1,104 @@
+# Déploie le site du groupe sur Azure à chaque push sur main.
+
+name: Déploiement du site
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # permet aussi de relancer le déploiement à la main
+
+# Le workflow a seulement besoin de lire le code.
+permissions:
+  contents: read
+
+# Pas deux déploiements en même temps.
+concurrency:
+  group: deploiement
+
+env:
+  # Préfixe des comptes de stockage, ne pas modifier
+  STORAGE_PREFIX: stesgitpgit
+  CLASS_NAME: ${{ vars.CLASS_NAME }}
+  GROUP_NAME: ${{ vars.GROUP_NAME }}
+  TEAM_MEMBERS: ${{ vars.TEAM_MEMBERS }}
+
+jobs:
+  deploy:
+    name: Construire et déployer
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Récupérer le code source
+        uses: actions/checkout@v6
+
+      - name: Vérifier les variables et le secret
+        env:
+          SAS_TOKEN: ${{ secrets.AZURE_STORAGE_SAS_TOKEN }}
+        run: |
+          erreur=0
+          if [[ ! "$CLASS_NAME" =~ ^SRC[A-Z0-9]{1,6}$ ]]; then
+            echo "::error::CLASS_NAME doit être le nom de la classe en majuscules, ex. SRC1 ou SRCRJ (valeur actuelle : '$CLASS_NAME')."
+            erreur=1
+          fi
+          if [[ ! "$GROUP_NAME" =~ ^G([1-9]|1[0-5])$ ]]; then
+            echo "::error::GROUP_NAME doit valoir G1 à G15 (valeur actuelle : '$GROUP_NAME')."
+            erreur=1
+          fi
+          if [[ -z "${TEAM_MEMBERS// /}" ]]; then
+            echo "::error::TEAM_MEMBERS est vide : indiquez les membres séparés par des virgules."
+            erreur=1
+          fi
+          # On vérifie juste que le jeton est présent, sans l'afficher
+          if [[ -z "$SAS_TOKEN" ]]; then
+            echo "::error::Le secret AZURE_STORAGE_SAS_TOKEN n'est pas configuré."
+            erreur=1
+          fi
+          exit $erreur
+
+      - name: Personnaliser le site
+        run: |
+          rm -rf dist
+          cp -r site dist
+
+          # jq gère l'échappement des guillemets et des accents
+          jq -n \
+            --arg className "$CLASS_NAME" \
+            --arg groupName "$GROUP_NAME" \
+            --arg members "$TEAM_MEMBERS" \
+            --arg commit "$GITHUB_SHA" \
+            --arg run "$GITHUB_RUN_NUMBER" \
+            --arg actor "$GITHUB_ACTOR" \
+            --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{
+              className: $className,
+              groupName: $groupName,
+              members: ($members | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))),
+              build: { commit: $commit, run: $run, actor: $actor, date: $date }
+            }' > dist/team.json
+
+          echo "window.TEAM_CONFIG = $(cat dist/team.json);" > dist/js/config.js
+
+          echo "Configuration générée :"
+          cat dist/team.json
+
+      - name: Déployer sur Azure
+        env:
+          # az lit directement AZURE_STORAGE_ACCOUNT et AZURE_STORAGE_SAS_TOKEN
+          AZURE_STORAGE_SAS_TOKEN: ${{ secrets.AZURE_STORAGE_SAS_TOKEN }}
+        run: |
+          # ex. stesgitpgitsrc2
+          export AZURE_STORAGE_ACCOUNT="${STORAGE_PREFIX}${CLASS_NAME,,}"
+
+          # --overwrite : remplace la version précédente
+          # no-cache    : évite que le navigateur garde une ancienne version
+          az storage blob upload-batch \
+            --destination '$web' \
+            --destination-path "$GROUP_NAME" \
+            --source dist \
+            --overwrite \
+            --content-cache-control "no-cache" \
+            --only-show-errors \
+            --output none
+
+          echo "### Site déployé" >> "$GITHUB_STEP_SUMMARY"
+          echo "Classe **$CLASS_NAME**, groupe **$GROUP_NAME** : ouvrez l'URL de votre fiche, qui se termine par \`/$GROUP_NAME/\`." >> "$GITHUB_STEP_SUMMARY"
